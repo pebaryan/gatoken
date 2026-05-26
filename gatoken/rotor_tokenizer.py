@@ -1,8 +1,8 @@
 """
-RotorSubwordTokenizer - Rotor-Guided Subword Merging
+RotorSubwordTokenizer - Iterative Rotor-Guided BPE Merging
 
 Uses the shared CliffordEngine3D from clifford.py.
-Correct geometric product, proper character embeddings, consistent Chinese handling.
+Correct geometric product, proper character embeddings, iterative BPE.
 """
 
 import torch
@@ -14,11 +14,15 @@ from .ga_interface import GATokenizer
 
 class RotorSubwordTokenizer(GATokenizer):
     """
-    Rotor-guided subword tokenizer with grade-aware merging.
+    Rotor-guided subword tokenizer with iterative BPE-style merging.
+
+    Key improvement: after each merge, bigram frequencies are recomputed
+    on the modified corpus. This captures second-order effects (e.g., after
+    merging "t"+"h" → "th", the frequency of "th"+"e" changes).
 
     - Characters embedded using non-degenerate Unicode hashing
-    - Correct Cl(3,0) geometric product
-    - Rotor-guided merging for all scripts (including Chinese)
+    - Correct Cl(3,0) geometric product (differentiable)
+    - Iterative rotor-guided merging for all scripts (including Chinese)
     - Grade-aware scoring (favor bivector, penalize trivector)
     """
 
@@ -27,47 +31,118 @@ class RotorSubwordTokenizer(GATokenizer):
         self.engine = CliffordEngine3D()
         self.vocab: Dict[str, int] = {}
         self.id_to_token: Dict[int, str] = {}
-        self.char_to_mv: Dict[str, torch.Tensor] = {}
+        self.token_to_mv: Dict[str, torch.Tensor] = {}
         self.merges: List[Tuple[str, str]] = []
 
+    def _score_bigram(self, a: str, b: str, count: int) -> float:
+        """Score a bigram using rotor-guided + grade-aware criteria."""
+        if a not in self.token_to_mv or b not in self.token_to_mv:
+            return 0.0
+        rotor = self.engine.rotor_between(
+            self.token_to_mv[a], self.token_to_mv[b]
+        )
+        s, v, biv, t = self.engine.grade_norms(rotor)
+        total = s + v + biv + t + 1e-8
+        return count * (2.0 * biv - 0.4 * t) / total
+
+    def _tokenize_with_merges(self, tokens: List[str], up_to: int = None) -> List[str]:
+        """Apply merges to a token list (up to a specific merge index)."""
+        limit = up_to if up_to is not None else len(self.merges)
+        for idx in range(limit):
+            a, b = self.merges[idx]
+            merged = a + b
+            new_tokens = []
+            i = 0
+            while i < len(tokens):
+                if i + 1 < len(tokens) and tokens[i] == a and tokens[i+1] == b:
+                    new_tokens.append(merged)
+                    i += 2
+                else:
+                    new_tokens.append(tokens[i])
+                    i += 1
+            tokens = new_tokens
+        return tokens
+
     def train(self, texts: List[str]):
+        """Iterative BPE-style training with rotor-guided scoring.
+
+        In each iteration:
+        1. Count bigrams on current tokenized corpus
+        2. Score each bigram using rotor criteria
+        3. Pick the best-scoring pair
+        4. Merge that pair everywhere in the corpus
+        5. Repeat until max_vocab_size reached
+        """
         # Build initial character vocabulary
         all_chars = set("".join(texts))
         for i, c in enumerate(sorted(all_chars)):
             self.vocab[c] = i
             self.id_to_token[i] = c
-            self.char_to_mv[c] = self.engine.embed_char(c)
+            self.token_to_mv[c] = self.engine.embed_char(c)
 
-        # Count bigrams across all scripts
-        bigram_count = defaultdict(int)
-        for text in texts:
-            for a, b in zip(text, text[1:]):
-                bigram_count[(a, b)] += 1
+        # Initialize corpus as character sequences
+        corpus = [list(text) for text in texts]
 
-        # Score bigrams using rotor-guided + grade-aware scoring
-        scored = []
-        for (a, b), count in bigram_count.items():
-            if a in self.char_to_mv and b in self.char_to_mv:
-                rotor = self.engine.rotor_between(
-                    self.char_to_mv[a], self.char_to_mv[b]
-                )
-                s, v, biv, t = self.engine.grade_norms(rotor)
-                total = s + v + biv + t + 1e-8
-                score = count * (2.0 * biv - 0.4 * t) / total
-                if score > 0:
-                    scored.append(((a, b), score))
+        num_merges = self.max_vocab_size - len(self.vocab)
 
-        scored.sort(key=lambda x: x[1], reverse=True)
+        for merge_step in range(num_merges):
+            # Count bigrams in current corpus
+            bigram_count = defaultdict(int)
+            for doc in corpus:
+                for i in range(len(doc) - 1):
+                    bigram_count[(doc[i], doc[i+1])] += 1
 
-        for (a, b), _ in scored[:self.max_vocab_size - len(self.vocab)]:
+            if not bigram_count:
+                break
+
+            # Score all bigrams
+            best_pair = None
+            best_score = -1.0
+
+            for (a, b), count in bigram_count.items():
+                score = self._score_bigram(a, b, count)
+                if score > best_score:
+                    best_score = score
+                    best_pair = (a, b)
+
+            if best_pair is None or best_score <= 0:
+                break
+
+            # Create merged token
+            a, b = best_pair
             merged = a + b
-            if merged not in self.vocab:
-                new_id = len(self.vocab)
-                self.vocab[merged] = new_id
-                self.id_to_token[new_id] = merged
-                self.merges.append((a, b))
+
+            # Add to vocabulary
+            new_id = len(self.vocab)
+            self.vocab[merged] = new_id
+            self.id_to_token[new_id] = merged
+            self.merges.append((a, b))
+
+            # Compute multivector for merged token
+            mv_a = self.token_to_mv[a]
+            mv_b = self.token_to_mv[b]
+            merged_mv = self.engine.normalize(
+                (mv_a + mv_b) / 2 + 0.3 * self.engine.geometric_product(mv_a, mv_b)
+            )
+            self.token_to_mv[merged] = merged_mv
+
+            # Apply merge to corpus
+            for doc_idx in range(len(corpus)):
+                new_doc = []
+                i = 0
+                while i < len(corpus[doc_idx]):
+                    if (i + 1 < len(corpus[doc_idx]) and
+                        corpus[doc_idx][i] == a and
+                        corpus[doc_idx][i+1] == b):
+                        new_doc.append(merged)
+                        i += 2
+                    else:
+                        new_doc.append(corpus[doc_idx][i])
+                        i += 1
+                corpus[doc_idx] = new_doc
 
     def tokenize(self, text: str) -> List[str]:
+        """Tokenize text by applying all learned merges in order."""
         tokens = list(text)
         for a, b in self.merges:
             merged = a + b
