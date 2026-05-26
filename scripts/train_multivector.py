@@ -1,11 +1,13 @@
 """
 Training script for TokenMultivectorTokenizer
 with E + C + B losses (Rotor Consistency + Grade-wise + Reconstruction).
+
+Uses the differentiable CliffordEngine3D with correct GP.
 """
 
 import torch
 from collections import defaultdict
-from gatoken import TokenMultivectorTokenizer
+from gatoken import TokenMultivectorTokenizer, run_gp_tests
 
 
 def build_cooccurrence(texts):
@@ -51,6 +53,13 @@ def sample_pairs(vocab, cooc, num_pairs=128):
 
 
 def main():
+    # Verify GP correctness first
+    print("Running GP correctness tests...")
+    if not run_gp_tests():
+        print("GP tests FAILED. Aborting.")
+        return
+    print()
+
     texts = [
         "hello world",
         "saya suka makan nasi goreng",
@@ -64,7 +73,7 @@ def main():
     print(f"Vocab size: {tokenizer.vocab_size}")
 
     cooc = build_cooccurrence(texts)
-    params = [p for p in tokenizer.token_to_mv.values() if isinstance(p, torch.nn.Parameter)]
+    params = list(tokenizer.token_to_mv.values())
     optimizer = torch.optim.Adam(params, lr=3e-4)
 
     engine = tokenizer.engine
@@ -72,40 +81,41 @@ def main():
     lambda_grade = 0.5
     lambda_recon = 0.3
 
-    print("\nTraining with E + C + B objective...\n")
+    print("\nTraining with E + C + B objective (differentiable GP)...\n")
 
     for step in range(500):
         pairs, labels, targets = sample_pairs(tokenizer.vocab, cooc, 96)
 
-        loss = 0.0
+        loss = torch.tensor(0.0, requires_grad=True)
         for (i, j), label, (t_i, t_j) in zip(pairs, labels, targets):
             mv_i = tokenizer.token_to_mv[tokenizer.vocab[i]]
             mv_j = tokenizer.token_to_mv[tokenizer.vocab[j]]
 
-            # E: Rotor Consistency
-            rotor = engine.rotor_between(mv_i.data, mv_j.data)
-            _, _, biv, tri = engine.grade_norms(rotor)
+            # E: Rotor Consistency (now fully differentiable)
+            rotor = engine.rotor_between(mv_i, mv_j)
+            s, v, biv, tri = engine.grade_norms(rotor)
+
             if label == 1:
-                r_loss = tri + 0.2 * max(0.3 - biv, 0)
+                r_loss = tri + 0.2 * torch.relu(0.3 - biv)
             else:
-                r_loss = max(biv - 0.2, 0) + 0.1 * tri
+                r_loss = torch.relu(biv - 0.2) + 0.1 * tri
 
             # C: Grade-wise
             g_loss = (mv_i[0] - t_i['scalar'])**2 + (mv_j[0] - t_j['scalar'])**2
-            g_loss += (biv - t_i['bivector'])**2 * 0.5
+            biv_val = torch.sqrt(torch.sum(mv_i[4:7]**2) + 1e-12)
+            g_loss = g_loss + (biv_val - t_i['bivector'])**2 * 0.5
 
             # B: Reconstruction (for merged tokens)
-            recon_loss = 0.0
+            recon_loss = torch.tensor(0.0)
             if len(tokenizer.vocab[i]) > 1:
-                # Try to reconstruct from first two characters
                 chars = list(tokenizer.vocab[i])
                 if len(chars) >= 2 and chars[0] in tokenizer.token_to_mv and chars[1] in tokenizer.token_to_mv:
-                    mv_a = tokenizer.token_to_mv[chars[0]].data
-                    mv_b = tokenizer.token_to_mv[chars[1]].data
+                    mv_a = tokenizer.token_to_mv[chars[0]]
+                    mv_b = tokenizer.token_to_mv[chars[1]]
                     recon = engine.normalize((mv_a + mv_b) / 2 + 0.3 * engine.geometric_product(mv_a, mv_b))
-                    recon_loss += torch.norm(mv_i.data - recon)
+                    recon_loss = torch.norm(mv_i - recon)
 
-            loss += lambda_rotor * r_loss + lambda_grade * g_loss + lambda_recon * recon_loss
+            loss = loss + lambda_rotor * r_loss + lambda_grade * g_loss + lambda_recon * recon_loss
 
         loss = loss / len(pairs)
 
@@ -114,7 +124,7 @@ def main():
         optimizer.step()
 
         if step % 50 == 0:
-            print(f"Step {step:3d} | Loss: {loss:.4f}")
+            print(f"Step {step:3d} | Loss: {loss.item():.4f}")
 
     print("\nTraining finished.")
 
