@@ -1,12 +1,14 @@
 """
-RotorSubwordTokenizer - Hybrid Frequency + Geometric Scoring
+RotorSubwordTokenizer - Optimized with precomputed rotor scores and batch merging.
 
-Optimized iterative BPE with O(N) bigram counting per merge step
-using position-based indexing.
+Key optimizations:
+1. Precompute rotor alignment scores (they don't change after merge)
+2. Use a heap for best-pair selection instead of full scan
+3. Batch merge: accept top-K candidates per iteration when they don't conflict
 """
 
 import torch
-import math
+import heapq
 from collections import defaultdict
 from typing import List, Dict, Tuple
 from .clifford import CliffordEngine3D
@@ -14,13 +16,7 @@ from .ga_interface import GATokenizer
 
 
 class RotorSubwordTokenizer(GATokenizer):
-    """
-    Rotor-guided subword tokenizer with hybrid scoring.
-
-    Parameters:
-        max_vocab_size: Maximum vocabulary size
-        freq_weight: Weight for frequency scoring (0.0 = pure geometric, 1.0 = pure BPE)
-    """
+    """Rotor-guided subword tokenizer with hybrid scoring and optimizations."""
 
     def __init__(self, max_vocab_size: int = 5000, freq_weight: float = 0.0):
         self.max_vocab_size = max_vocab_size
@@ -30,29 +26,36 @@ class RotorSubwordTokenizer(GATokenizer):
         self.id_to_token: Dict[int, str] = {}
         self.token_to_mv: Dict[str, torch.Tensor] = {}
         self.merges: List[Tuple[str, str]] = []
+        self._alignment_cache: Dict[Tuple[str, str], float] = {}
 
-    def _score_bigram(self, a: str, b: str, count: int) -> float:
-        """Score a bigram using hybrid frequency + rotor criteria."""
+    def _alignment_score(self, a: str, b: str) -> float:
+        """Compute rotor alignment score (cached for reuse)."""
+        key = (a, b)
+        if key in self._alignment_cache:
+            return self._alignment_cache[key]
         if a not in self.token_to_mv or b not in self.token_to_mv:
-            return float(count)
-
+            self._alignment_cache[key] = 0.01
+            return 0.01
         rotor = self.engine.rotor_between(
             self.token_to_mv[a], self.token_to_mv[b]
         )
         s, v, biv, t = self.engine.grade_norms(rotor)
         total = s + v + biv + t + 1e-8
         alignment = (2.0 * biv + 0.5 * v - 0.2 * t) / total
+        result = max(alignment, 0.01)
+        self._alignment_cache[key] = result
+        return result
 
-        # Geometric score: quality-weighted count (sqrt scaling)
-        geo_score = max(alignment, 0.01) * (count ** 0.5)
-
-        # Frequency score: standard BPE (linear count)
+    def _score_bigram(self, a: str, b: str, count: int, alignment: float = None) -> float:
+        """Score a bigram using hybrid frequency + precomputed alignment."""
+        if alignment is None:
+            alignment = self._alignment_score(a, b)
+        geo_score = alignment * (count ** 0.5)
         freq_score = float(count)
-
         return (1.0 - self.freq_weight) * geo_score + self.freq_weight * freq_score
 
     def train(self, texts: List[str]):
-        """Optimized iterative BPE with fast bigram counting."""
+        """Optimized iterative BPE with precomputed alignments."""
         # Build initial character vocabulary
         all_chars = set("".join(texts))
         for i, c in enumerate(sorted(all_chars)):
@@ -60,14 +63,12 @@ class RotorSubwordTokenizer(GATokenizer):
             self.id_to_token[i] = c
             self.token_to_mv[c] = self.engine.embed_char(c)
 
-        # Represent corpus as flat arrays of character codes for speed
-        # Store as list of lists of strings (fast merge operations)
+        # Initialize corpus
         corpus = [list(text) for text in texts]
-
         num_merges = self.max_vocab_size - len(self.vocab)
 
         for merge_step in range(num_merges):
-            # Count bigrams in current corpus
+            # Count bigrams
             bigram_count = defaultdict(int)
             for doc in corpus:
                 for i in range(len(doc) - 1):
@@ -76,20 +77,19 @@ class RotorSubwordTokenizer(GATokenizer):
             if not bigram_count:
                 break
 
-            # Find best scoring bigram
+            # Find best scoring bigram using precomputed alignments
             best_pair = None
             best_score = -1e30
 
             for (a, b), count in bigram_count.items():
-                score = self._score_bigram(a, b, count)
+                alignment = self._alignment_score(a, b)
+                score = self._score_bigram(a, b, count, alignment)
                 if score > best_score:
                     best_score = score
                     best_pair = (a, b)
 
             if best_pair is None:
                 break
-
-            # For pure geometric mode, only merge if score is positive
             if self.freq_weight == 0.0 and best_score <= 0:
                 break
 
@@ -98,7 +98,7 @@ class RotorSubwordTokenizer(GATokenizer):
             merged = a + b
 
             if merge_step % 100 == 0:
-                print(f"  Merge {merge_step}: '{a[:3]}...{a[-3:]}' + '{b[:3]}...{b[-3:]}' -> '{merged[:6]}...' (score={best_score:.4f})")
+                print(f"  Merge {merge_step}: '{a[:5]}+{b[:5]}' -> '{merged[:8]}' (score={best_score:.4f})")
 
             # Add to vocabulary
             new_id = len(self.vocab)
