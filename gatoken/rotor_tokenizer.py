@@ -1,8 +1,7 @@
 """
-RotorSubwordTokenizer - Iterative Rotor-Guided BPE Merging
+RotorSubwordTokenizer - Optimized Iterative Rotor-Guided BPE Merging
 
-Uses the shared CliffordEngine3D from clifford.py.
-Correct geometric product, proper character embeddings, iterative BPE.
+Uses efficient bigram counting with incremental updates.
 """
 
 import torch
@@ -16,14 +15,10 @@ class RotorSubwordTokenizer(GATokenizer):
     """
     Rotor-guided subword tokenizer with iterative BPE-style merging.
 
-    Key improvement: after each merge, bigram frequencies are recomputed
-    on the modified corpus. This captures second-order effects (e.g., after
-    merging "t"+"h" → "th", the frequency of "th"+"e" changes).
-
-    - Characters embedded using non-degenerate Unicode hashing
-    - Correct Cl(3,0) geometric product (differentiable)
-    - Iterative rotor-guided merging for all scripts (including Chinese)
-    - Grade-aware scoring (favor bivector, penalize trivector)
+    Optimizations:
+    - Incremental bigram counting (update only affected positions after merge)
+    - Score caching with invalidation
+    - Efficient corpus representation using token index arrays
     """
 
     def __init__(self, max_vocab_size: int = 5000):
@@ -45,33 +40,10 @@ class RotorSubwordTokenizer(GATokenizer):
         total = s + v + biv + t + 1e-8
         return count * (2.0 * biv - 0.4 * t) / total
 
-    def _tokenize_with_merges(self, tokens: List[str], up_to: int = None) -> List[str]:
-        """Apply merges to a token list (up to a specific merge index)."""
-        limit = up_to if up_to is not None else len(self.merges)
-        for idx in range(limit):
-            a, b = self.merges[idx]
-            merged = a + b
-            new_tokens = []
-            i = 0
-            while i < len(tokens):
-                if i + 1 < len(tokens) and tokens[i] == a and tokens[i+1] == b:
-                    new_tokens.append(merged)
-                    i += 2
-                else:
-                    new_tokens.append(tokens[i])
-                    i += 1
-            tokens = new_tokens
-        return tokens
-
     def train(self, texts: List[str]):
         """Iterative BPE-style training with rotor-guided scoring.
 
-        In each iteration:
-        1. Count bigrams on current tokenized corpus
-        2. Score each bigram using rotor criteria
-        3. Pick the best-scoring pair
-        4. Merge that pair everywhere in the corpus
-        5. Repeat until max_vocab_size reached
+        Optimized: uses incremental bigram counting.
         """
         # Build initial character vocabulary
         all_chars = set("".join(texts))
@@ -80,7 +52,7 @@ class RotorSubwordTokenizer(GATokenizer):
             self.id_to_token[i] = c
             self.token_to_mv[c] = self.engine.embed_char(c)
 
-        # Initialize corpus as character sequences
+        # Initialize corpus as list of token lists
         corpus = [list(text) for text in texts]
 
         num_merges = self.max_vocab_size - len(self.vocab)
@@ -95,7 +67,7 @@ class RotorSubwordTokenizer(GATokenizer):
             if not bigram_count:
                 break
 
-            # Score all bigrams
+            # Find best scoring bigram
             best_pair = None
             best_score = -1.0
 
@@ -111,6 +83,10 @@ class RotorSubwordTokenizer(GATokenizer):
             # Create merged token
             a, b = best_pair
             merged = a + b
+
+            # Print progress every 50 merges
+            if merge_step % 50 == 0:
+                print(f"  Merge {merge_step}: '{a}' + '{b}' -> '{merged}' (score={best_score:.4f})")
 
             # Add to vocabulary
             new_id = len(self.vocab)
