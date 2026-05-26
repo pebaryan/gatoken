@@ -1,10 +1,12 @@
 """
-RotorSubwordTokenizer - Optimized Iterative Rotor-Guided BPE Merging
+RotorSubwordTokenizer - Hybrid Frequency + Geometric Scoring
 
-Uses efficient bigram counting with incremental updates.
+Optimized iterative BPE with O(N) bigram counting per merge step
+using position-based indexing.
 """
 
 import torch
+import math
 from collections import defaultdict
 from typing import List, Dict, Tuple
 from .clifford import CliffordEngine3D
@@ -13,16 +15,16 @@ from .ga_interface import GATokenizer
 
 class RotorSubwordTokenizer(GATokenizer):
     """
-    Rotor-guided subword tokenizer with iterative BPE-style merging.
+    Rotor-guided subword tokenizer with hybrid scoring.
 
-    Optimizations:
-    - Incremental bigram counting (update only affected positions after merge)
-    - Score caching with invalidation
-    - Efficient corpus representation using token index arrays
+    Parameters:
+        max_vocab_size: Maximum vocabulary size
+        freq_weight: Weight for frequency scoring (0.0 = pure geometric, 1.0 = pure BPE)
     """
 
-    def __init__(self, max_vocab_size: int = 5000):
+    def __init__(self, max_vocab_size: int = 5000, freq_weight: float = 0.0):
         self.max_vocab_size = max_vocab_size
+        self.freq_weight = freq_weight
         self.engine = CliffordEngine3D()
         self.vocab: Dict[str, int] = {}
         self.id_to_token: Dict[int, str] = {}
@@ -30,21 +32,27 @@ class RotorSubwordTokenizer(GATokenizer):
         self.merges: List[Tuple[str, str]] = []
 
     def _score_bigram(self, a: str, b: str, count: int) -> float:
-        """Score a bigram using rotor-guided + grade-aware criteria."""
+        """Score a bigram using hybrid frequency + rotor criteria."""
         if a not in self.token_to_mv or b not in self.token_to_mv:
-            return 0.0
+            return float(count)
+
         rotor = self.engine.rotor_between(
             self.token_to_mv[a], self.token_to_mv[b]
         )
         s, v, biv, t = self.engine.grade_norms(rotor)
         total = s + v + biv + t + 1e-8
-        return count * (2.0 * biv - 0.4 * t) / total
+        alignment = (2.0 * biv + 0.5 * v - 0.2 * t) / total
+
+        # Geometric score: quality-weighted count (sqrt scaling)
+        geo_score = max(alignment, 0.01) * (count ** 0.5)
+
+        # Frequency score: standard BPE (linear count)
+        freq_score = float(count)
+
+        return (1.0 - self.freq_weight) * geo_score + self.freq_weight * freq_score
 
     def train(self, texts: List[str]):
-        """Iterative BPE-style training with rotor-guided scoring.
-
-        Optimized: uses incremental bigram counting.
-        """
+        """Optimized iterative BPE with fast bigram counting."""
         # Build initial character vocabulary
         all_chars = set("".join(texts))
         for i, c in enumerate(sorted(all_chars)):
@@ -52,7 +60,8 @@ class RotorSubwordTokenizer(GATokenizer):
             self.id_to_token[i] = c
             self.token_to_mv[c] = self.engine.embed_char(c)
 
-        # Initialize corpus as list of token lists
+        # Represent corpus as flat arrays of character codes for speed
+        # Store as list of lists of strings (fast merge operations)
         corpus = [list(text) for text in texts]
 
         num_merges = self.max_vocab_size - len(self.vocab)
@@ -69,7 +78,7 @@ class RotorSubwordTokenizer(GATokenizer):
 
             # Find best scoring bigram
             best_pair = None
-            best_score = -1.0
+            best_score = -1e30
 
             for (a, b), count in bigram_count.items():
                 score = self._score_bigram(a, b, count)
@@ -77,16 +86,19 @@ class RotorSubwordTokenizer(GATokenizer):
                     best_score = score
                     best_pair = (a, b)
 
-            if best_pair is None or best_score <= 0:
+            if best_pair is None:
+                break
+
+            # For pure geometric mode, only merge if score is positive
+            if self.freq_weight == 0.0 and best_score <= 0:
                 break
 
             # Create merged token
             a, b = best_pair
             merged = a + b
 
-            # Print progress every 50 merges
-            if merge_step % 50 == 0:
-                print(f"  Merge {merge_step}: '{a}' + '{b}' -> '{merged}' (score={best_score:.4f})")
+            if merge_step % 100 == 0:
+                print(f"  Merge {merge_step}: '{a[:3]}...{a[-3:]}' + '{b[:3]}...{b[-3:]}' -> '{merged[:6]}...' (score={best_score:.4f})")
 
             # Add to vocabulary
             new_id = len(self.vocab)
