@@ -16,8 +16,9 @@ from typing import Tuple
 # Basis: {1, e1, e2, e3, e12, e13, e23, e123}
 # Indices: 0=1, 1=e1, 2=e2, 3=e3, 4=e12, 5=e13, 6=e23, 7=e123
 
-# Correct GP table for Cl(3,0), computed from canonical anticommutation rules:
-#   ei*ei = 1, ei*ej = -ej*ei for i != j
+# GP table for Cl(3,0), derived from canonical anticommutation rules:
+#   ei*ei = 1, ei*ej = -ej*ei for i != j.
+# Verified exhaustively against an independent derivation in run_gp_tests().
 GP_TABLE = {
     (0,0):( 0, 1),(0,1):( 1, 1),(0,2):( 2, 1),(0,3):( 3, 1),
     (0,4):( 4, 1),(0,5):( 5, 1),(0,6):( 6, 1),(0,7):( 7, 1),
@@ -26,15 +27,15 @@ GP_TABLE = {
     (2,0):( 2, 1),(2,1):( 4,-1),(2,2):( 0, 1),(2,3):( 6, 1),
     (2,4):( 1,-1),(2,5):( 7,-1),(2,6):( 3, 1),(2,7):( 5,-1),
     (3,0):( 3, 1),(3,1):( 5,-1),(3,2):( 6,-1),(3,3):( 0, 1),
-    (3,4):( 7, 1),(3,5):( 1,-1),(3,6):( 2,-1),(3,7):( 4,-1),
+    (3,4):( 7, 1),(3,5):( 1,-1),(3,6):( 2,-1),(3,7):( 4, 1),
     (4,0):( 4, 1),(4,1):( 2,-1),(4,2):( 1, 1),(4,3):( 7, 1),
     (4,4):( 0,-1),(4,5):( 6,-1),(4,6):( 5, 1),(4,7):( 3,-1),
     (5,0):( 5, 1),(5,1):( 3,-1),(5,2):( 7,-1),(5,3):( 1, 1),
     (5,4):( 6, 1),(5,5):( 0,-1),(5,6):( 4,-1),(5,7):( 2, 1),
-    (6,0):( 6, 1),(6,1):( 7,-1),(6,2):( 3,-1),(6,3):( 2, 1),
+    (6,0):( 6, 1),(6,1):( 7, 1),(6,2):( 3,-1),(6,3):( 2, 1),
     (6,4):( 5,-1),(6,5):( 4, 1),(6,6):( 0,-1),(6,7):( 1,-1),
-    (7,0):( 7, 1),(7,1):( 6, 1),(7,2):( 5,-1),(7,3):( 4,-1),
-    (7,4):( 3, 1),(7,5):( 2, 1),(7,6):( 1,-1),(7,7):( 0,-1),
+    (7,0):( 7, 1),(7,1):( 6, 1),(7,2):( 5,-1),(7,3):( 4, 1),
+    (7,4):( 3,-1),(7,5):( 2, 1),(7,6):( 1,-1),(7,7):( 0,-1),
 }
 
 
@@ -95,12 +96,20 @@ class CliffordEngine3D(nn.Module):
         trivector = torch.abs(mv[7])
         return scalar, vector, bivector, trivector
 
-    def rotor_exp(self, bivector: torch.Tensor, theta: float = 1.0) -> torch.Tensor:
-        """R = cos(theta/2) + sin(theta/2) * B_hat"""
+    def rotor_exp(self, bivector: torch.Tensor, theta: float = None) -> torch.Tensor:
+        """R = exp(theta/2 * B_hat) = cos(theta/2) + sin(theta/2) * B_hat.
+
+        If `theta` is None, uses theta = ||bivector[4:7]||, so the rotor's
+        magnitude actually reflects the input bivector's strength. Previously
+        theta was hardcoded to 1.0, which made the rotor norm constant and
+        collapsed the alignment score across all merge candidates.
+        """
         norm = torch.sqrt(torch.sum(bivector[4:7] ** 2) + 1e-12)
-        half_theta = theta / 2
-        cos_h = torch.cos(torch.tensor(half_theta))
-        sin_h = torch.sin(torch.tensor(half_theta))
+        if theta is None:
+            theta = norm
+        half_theta = theta / 2 if torch.is_tensor(theta) else torch.tensor(theta / 2)
+        cos_h = torch.cos(half_theta)
+        sin_h = torch.sin(half_theta)
 
         rotor = torch.zeros_like(bivector)
         rotor[0] = cos_h
@@ -109,11 +118,11 @@ class CliffordEngine3D(nn.Module):
         return rotor
 
     def rotor_between(self, mv1: torch.Tensor, mv2: torch.Tensor) -> torch.Tensor:
-        """Compute rotor that approximately relates mv1 to mv2."""
+        """Approximate rotor relating mv1 to mv2 via the bivector part of GP."""
         gp = self.geometric_product(mv1, mv2)
         biv = torch.zeros_like(gp)
         biv[4:7] = gp[4:7]
-        return self.rotor_exp(biv, theta=1.0)
+        return self.rotor_exp(biv)
 
     def embed_char(self, char: str) -> torch.Tensor:
         """Embed a character as a multivector using Unicode codepoint hashing.
@@ -136,8 +145,8 @@ class CliffordEngine3D(nn.Module):
             mv[4] = 0.5 * torch.sin(torch.tensor(code * 0.19))
             mv[5] = 0.5 * torch.cos(torch.tensor(code * 0.23))
 
-        # Normalize to unit vector (keep in vector subspace)
-        vec_norm = torch.sqrt(mv[1:4] ** 2).sum().sqrt()
+        # Normalize the vector part to unit length (true L2 norm).
+        vec_norm = torch.norm(mv[1:4])
         if vec_norm > 1e-8:
             mv[1:4] = mv[1:4] / vec_norm
 
@@ -155,66 +164,90 @@ class CliffordEngine3D(nn.Module):
 
 # === Unit tests ===
 
+# Basis blade indices used to derive the GP table from scratch.
+# 0 -> 1 (scalar), 1 -> e1, 2 -> e2, 3 -> e3, 4 -> e12, 5 -> e13, 6 -> e23, 7 -> e123
+_BASIS_BLADES = [(), (1,), (2,), (3,), (1,2), (1,3), (2,3), (1,2,3)]
+_BLADE_INDEX = {b: i for i, b in enumerate(_BASIS_BLADES)}
+
+
+def _multiply_blade(a, b):
+    """Multiply two sorted-tuple blades using ei*ei=1, ei*ej=-ej*ei.
+    Returns (sign, sorted_tuple) of the canonical result."""
+    seq = list(a) + list(b)
+    sign = 1
+    while True:
+        for i in range(len(seq) - 1):
+            if seq[i] > seq[i+1]:
+                seq[i], seq[i+1] = seq[i+1], seq[i]
+                sign = -sign
+                break
+            elif seq[i] == seq[i+1]:
+                del seq[i:i+2]
+                break
+        else:
+            break
+    return sign, tuple(seq)
+
+
+def _derive_gp_table():
+    """Derive the full 64-entry GP table from first principles."""
+    table = {}
+    for i, a in enumerate(_BASIS_BLADES):
+        for j, b in enumerate(_BASIS_BLADES):
+            sign, result = _multiply_blade(a, b)
+            table[(i, j)] = (_BLADE_INDEX[result], sign)
+    return table
+
+
 def run_gp_tests():
-    """Verify the geometric product table against known identities."""
-    engine = CliffordEngine3D()
+    """Verify all 64 GP_TABLE entries against an independent derivation,
+    plus end-to-end algebra properties (associativity, pseudoscalar identities)."""
+    derived = _derive_gp_table()
+    sign_mismatches = [(k, GP_TABLE[k], derived[k]) for k in derived if GP_TABLE[k] != derived[k]]
+
     errors = []
+    if sign_mismatches:
+        for (i, j), code, correct in sign_mismatches:
+            errors.append(f"GP_TABLE[({i},{j})] = {code}, should be {correct}")
 
-    # e1 * e1 = 1
-    e1 = torch.zeros(8); e1[1] = 1.0
-    result = engine.geometric_product(e1, e1)
-    if not torch.allclose(result, torch.tensor([1.,0,0,0,0,0,0,0]), atol=1e-6):
-        errors.append(f"e1*e1 != 1: got {result}")
+    engine = CliffordEngine3D()
 
-    # e1 * e2 = e12
-    e2 = torch.zeros(8); e2[2] = 1.0
-    result = engine.geometric_product(e1, e2)
-    expected = torch.zeros(8); expected[4] = 1.0  # e12
-    if not torch.allclose(result, expected, atol=1e-6):
-        errors.append(f"e1*e2 != e12: got {result}")
+    def mv(idx, s=1.0):
+        v = torch.zeros(8); v[idx] = s; return v
 
-    # e2 * e1 = -e12
-    result = engine.geometric_product(e2, e1)
-    expected = torch.zeros(8); expected[4] = -1.0
-    if not torch.allclose(result, expected, atol=1e-6):
-        errors.append(f"e2*e1 != -e12: got {result}")
+    e1, e2, e3 = mv(1), mv(2), mv(3)
+    e12, e13, e23 = mv(4), mv(5), mv(6)
+    I = mv(7)
 
-    # e12 * e12 = -1
-    e12 = torch.zeros(8); e12[4] = 1.0
-    result = engine.geometric_product(e12, e12)
-    expected = torch.tensor([-1.,0,0,0,0,0,0,0])
-    if not torch.allclose(result, expected, atol=1e-6):
-        errors.append(f"e12*e12 != -1: got {result}")
+    # In Cl(3,0) the pseudoscalar I commutes with all elements.
+    for v, label in [(e1, "e1"), (e2, "e2"), (e3, "e3"), (e12, "e12"), (e23, "e23")]:
+        lhs = engine.geometric_product(v, I)
+        rhs = engine.geometric_product(I, v)
+        if not torch.allclose(lhs, rhs, atol=1e-6):
+            errors.append(f"{label}*I != I*{label}: pseudoscalar should commute")
 
-    # e12 * e13 = -e23 (this was WRONG in the old table)
-    e13 = torch.zeros(8); e13[5] = 1.0
-    result = engine.geometric_product(e12, e13)
-    expected = torch.zeros(8); expected[6] = -1.0  # -e23
-    if not torch.allclose(result, expected, atol=1e-6):
-        errors.append(f"e12*e13 != -e23: got {result}")
+    # Vectors with disjoint-index bivectors commute (e.g., e1 with e23).
+    for v_idx, b_idx, label in [(1, 6, "e1*e23"), (2, 5, "e2*e13"), (3, 4, "e3*e12")]:
+        v, b = mv(v_idx), mv(b_idx)
+        lhs = engine.geometric_product(v, b)
+        rhs = engine.geometric_product(b, v)
+        if not torch.allclose(lhs, rhs, atol=1e-6):
+            errors.append(f"{label}: vector and disjoint-index bivector should commute")
 
-    # e123 * e123 = -1 (this was WRONG in the old table)
-    e123 = torch.zeros(8); e123[7] = 1.0
-    result = engine.geometric_product(e123, e123)
-    expected = torch.tensor([-1.,0,0,0,0,0,0,0])
-    if not torch.allclose(result, expected, atol=1e-6):
-        errors.append(f"e123*e123 != -1: got {result}")
-
-    # e13 * e23 = -e12 (this was WRONG)
-    e23 = torch.zeros(8); e23[6] = 1.0
-    result = engine.geometric_product(e13, e23)
-    expected = torch.zeros(8); expected[4] = -1.0  # -e12
-    if not torch.allclose(result, expected, atol=1e-6):
-        errors.append(f"e13*e23 != -e12: got {result}")
+    # Associativity spot-check across mixed grades.
+    for a, b, c in [(e23, e1, e1), (e12, e13, e23), (e1, e2, I)]:
+        lhs = engine.geometric_product(engine.geometric_product(a, b), c)
+        rhs = engine.geometric_product(a, engine.geometric_product(b, c))
+        if not torch.allclose(lhs, rhs, atol=1e-6):
+            errors.append(f"associativity violated for triple")
 
     if errors:
         print("GP TESTS FAILED:")
         for e in errors:
             print(f"  {e}")
         return False
-    else:
-        print("All GP tests passed!")
-        return True
+    print(f"All GP tests passed (64/64 table entries, commutativity, associativity).")
+    return True
 
 
 if __name__ == "__main__":

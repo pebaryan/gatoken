@@ -18,15 +18,24 @@ from .ga_interface import GATokenizer
 class RotorSubwordTokenizer(GATokenizer):
     """Rotor-guided subword tokenizer with hybrid scoring and optimizations."""
 
-    def __init__(self, max_vocab_size: int = 5000, freq_weight: float = 0.0):
+    UNK_TOKEN = "<unk>"
+
+    def __init__(self, max_vocab_size: int = 5000, freq_weight: float = 0.0,
+                 batch_size: int = 1):
         self.max_vocab_size = max_vocab_size
         self.freq_weight = freq_weight
+        self.batch_size = max(1, batch_size)
         self.engine = CliffordEngine3D()
         self.vocab: Dict[str, int] = {}
         self.id_to_token: Dict[int, str] = {}
         self.token_to_mv: Dict[str, torch.Tensor] = {}
         self.merges: List[Tuple[str, str]] = []
         self._alignment_cache: Dict[Tuple[str, str], float] = {}
+        # Reserve id 0 for an explicit unknown token so OOV characters don't
+        # silently collide with whichever symbol happens to be first in vocab.
+        self.vocab[self.UNK_TOKEN] = 0
+        self.id_to_token[0] = self.UNK_TOKEN
+        self.token_to_mv[self.UNK_TOKEN] = torch.zeros(self.engine.mv_dim)
 
     def _alignment_score(self, a: str, b: str) -> float:
         """Compute rotor alignment score (cached for reuse)."""
@@ -54,80 +63,106 @@ class RotorSubwordTokenizer(GATokenizer):
         freq_score = float(count)
         return (1.0 - self.freq_weight) * geo_score + self.freq_weight * freq_score
 
+    def _accept_merge(self, a: str, b: str) -> str:
+        """Register a single (a,b) merge in vocab + merge list, return the merged token."""
+        merged = a + b
+        if merged in self.vocab:
+            return merged
+        new_id = len(self.vocab)
+        self.vocab[merged] = new_id
+        self.id_to_token[new_id] = merged
+        self.merges.append((a, b))
+        mv_a = self.token_to_mv[a]
+        mv_b = self.token_to_mv[b]
+        self.token_to_mv[merged] = self.engine.normalize(
+            (mv_a + mv_b) / 2 + 0.3 * self.engine.geometric_product(mv_a, mv_b)
+        )
+        return merged
+
+    @staticmethod
+    def _apply_merge_to_corpus(corpus, a, b, merged):
+        for doc_idx in range(len(corpus)):
+            doc = corpus[doc_idx]
+            new_doc = []
+            i = 0
+            while i < len(doc):
+                if i + 1 < len(doc) and doc[i] == a and doc[i+1] == b:
+                    new_doc.append(merged)
+                    i += 2
+                else:
+                    new_doc.append(doc[i])
+                    i += 1
+            corpus[doc_idx] = new_doc
+
     def train(self, texts: List[str]):
-        """Optimized iterative BPE with precomputed alignments."""
-        # Build initial character vocabulary
+        """Iterative rotor-guided BPE. Supports batch merging via self.batch_size."""
+        # Build initial character vocabulary on top of the reserved UNK at id 0.
         all_chars = set("".join(texts))
-        for i, c in enumerate(sorted(all_chars)):
-            self.vocab[c] = i
-            self.id_to_token[i] = c
+        next_id = len(self.vocab)
+        for c in sorted(all_chars):
+            if c in self.vocab:
+                continue
+            self.vocab[c] = next_id
+            self.id_to_token[next_id] = c
             self.token_to_mv[c] = self.engine.embed_char(c)
+            next_id += 1
 
-        # Initialize corpus
         corpus = [list(text) for text in texts]
-        num_merges = self.max_vocab_size - len(self.vocab)
+        merges_remaining = self.max_vocab_size - len(self.vocab)
+        step = 0
 
-        for merge_step in range(num_merges):
-            # Count bigrams
+        while merges_remaining > 0:
             bigram_count = defaultdict(int)
             for doc in corpus:
                 for i in range(len(doc) - 1):
                     bigram_count[(doc[i], doc[i+1])] += 1
-
             if not bigram_count:
                 break
 
-            # Find best scoring bigram using precomputed alignments
-            best_pair = None
-            best_score = -1e30
-
+            # Score every candidate
+            scored = []
             for (a, b), count in bigram_count.items():
                 alignment = self._alignment_score(a, b)
-                score = self._score_bigram(a, b, count, alignment)
-                if score > best_score:
-                    best_score = score
-                    best_pair = (a, b)
-
-            if best_pair is None:
+                s = self._score_bigram(a, b, count, alignment)
+                if self.freq_weight == 0.0 and s <= 0:
+                    continue
+                scored.append((s, a, b))
+            if not scored:
                 break
-            if self.freq_weight == 0.0 and best_score <= 0:
-                break
+            scored.sort(reverse=True)
 
-            # Create merged token
-            a, b = best_pair
-            merged = a + b
+            # Pick up to batch_size non-conflicting pairs (no shared endpoint).
+            accepted = []
+            used = set()
+            for s, a, b in scored:
+                if len(accepted) >= min(self.batch_size, merges_remaining):
+                    break
+                if a in used or b in used:
+                    continue
+                accepted.append((s, a, b))
+                used.add(a); used.add(b)
+            if not accepted:
+                # Fall back to a single best merge if everything conflicts.
+                s, a, b = scored[0]
+                accepted = [(s, a, b)]
 
-            if merge_step % 100 == 0:
-                print(f"  Merge {merge_step}: '{a[:5]}+{b[:5]}' -> '{merged[:8]}' (score={best_score:.4f})")
+            top_score = accepted[0][0]
+            if step % 100 == 0 or self.batch_size > 1:
+                lead_a, lead_b = accepted[0][1], accepted[0][2]
+                # Force ASCII-safe output so Windows cp1252 stdout doesn't crash on CJK.
+                safe_a = lead_a[:5].encode("ascii", "replace").decode("ascii")
+                safe_b = lead_b[:5].encode("ascii", "replace").decode("ascii")
+                print(f"  Step {step}: accepted {len(accepted)} merges, "
+                      f"top '{safe_a}+{safe_b}' (score={top_score:.4f})",
+                      flush=True)
 
-            # Add to vocabulary
-            new_id = len(self.vocab)
-            self.vocab[merged] = new_id
-            self.id_to_token[new_id] = merged
-            self.merges.append((a, b))
-
-            # Compute multivector for merged token
-            mv_a = self.token_to_mv[a]
-            mv_b = self.token_to_mv[b]
-            merged_mv = self.engine.normalize(
-                (mv_a + mv_b) / 2 + 0.3 * self.engine.geometric_product(mv_a, mv_b)
-            )
-            self.token_to_mv[merged] = merged_mv
-
-            # Apply merge to corpus
-            for doc_idx in range(len(corpus)):
-                new_doc = []
-                i = 0
-                while i < len(corpus[doc_idx]):
-                    if (i + 1 < len(corpus[doc_idx]) and
-                        corpus[doc_idx][i] == a and
-                        corpus[doc_idx][i+1] == b):
-                        new_doc.append(merged)
-                        i += 2
-                    else:
-                        new_doc.append(corpus[doc_idx][i])
-                        i += 1
-                corpus[doc_idx] = new_doc
+            for _, a, b in accepted:
+                merged = self._accept_merge(a, b)
+                self._apply_merge_to_corpus(corpus, a, b, merged)
+                merges_remaining -= 1
+                if merges_remaining <= 0:
+                    break
+            step += 1
 
     def tokenize(self, text: str) -> List[str]:
         """Tokenize text by applying all learned merges in order."""
@@ -148,8 +183,8 @@ class RotorSubwordTokenizer(GATokenizer):
 
     def encode(self, text: str, **kwargs) -> List[int]:
         tokens = self.tokenize(text)
-        unk = list(self.vocab.keys())[0]
-        return [self.vocab.get(t, self.vocab[unk]) for t in tokens]
+        unk_id = self.vocab[self.UNK_TOKEN]
+        return [self.vocab.get(t, unk_id) for t in tokens]
 
     def decode(self, token_ids: List[int], **kwargs) -> str:
         return "".join(self.id_to_token.get(i, "<unk>") for i in token_ids)
