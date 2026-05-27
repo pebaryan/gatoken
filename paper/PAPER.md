@@ -210,7 +210,7 @@ At matched vocabulary size, RotorSubword achieves parity of 0.049, about **2.7×
 
 English fertility is higher under RotorSubword (2.55 vs 1.28), confirming that the parity-efficiency tradeoff persists at matched vocabulary sizes. However, the gap narrows substantially compared to the small-vocabulary experiment (2.55 vs 6.04).
 
-### 4.5 Characters-Per-Token: A Script-Fair Metric
+### 4.4 Characters-Per-Token: A Script-Fair Metric
 
 Fertility (tokens per whitespace-delimited word) disadvantages scripts that do not use whitespace to delimit words — Chinese, Japanese, and Thai inflate the denominator (zero or few "words"), making the ratio unrepresentative. Table 4 recomputes parity using **characters per token** (CPT), which avoids this bias.
 
@@ -236,7 +236,7 @@ Under CPT parity, RotorSubword achieves **0.443** — **4.2× better** than GPT-
 
 The CPT metric reveals that GPT-2's apparent efficiency for CJK languages (fewer tokens per "word") is misleading: those "words" are entire sentences because whitespace is absent. CPT corrects this by measuring how many semantic characters each token covers, regardless of word segmentation.
 
-### 4.4 Observations
+### 4.5 Observations
 
 **Parity improves at both vocabulary sizes.** At 500 vocab, parity is 0.089 vs 0.039 for mGPT (next best). At matched 50k vocab, parity is 0.049 vs 0.018 for GPT-2 — a 2.7× improvement. The gap closes somewhat at larger vocabulary because more merges give both tokenizers more capacity, but RotorSubword retains a substantial advantage.
 
@@ -246,7 +246,7 @@ The CPT metric reveals that GPT-2's apparent efficiency for CJK languages (fewer
 
 **Latin-script ratios are close to English at matched vocabulary.** Indonesian (1.07×), Malay (1.06×), and Javanese (1.09×) are close to English. Arabic (1.14×) and Hindi (0.94×) are also close. Vietnamese (0.74×) has lower fertility than English in this run, which should be interpreted cautiously because the metric is corpus- and tokenizer-dependent.
 
-### 4.5 Ablation Snapshot
+### 4.6 Ablation Snapshot
 
 Earlier three-language experiments on English, Indonesian, and Chinese suggest that the corrected geometric product, grade-aware scoring, and richer Chinese character embeddings each improve parity.
 
@@ -261,7 +261,7 @@ Earlier three-language experiments on English, Indonesian, and Chinese suggest t
 
 This table should be read as a development trace rather than a controlled final ablation. Some rows differ in corpus size, merge procedure, and evaluation setup.
 
-### 4.6 Geometric Product Correctness
+### 4.7 Geometric Product Correctness
 
 The Cl(3,0) multiplication table is central to the approach. During development, sign errors in the initial table changed several identities, including bivector products and the pseudoscalar square. The current implementation verifies representative canonical identities in `gatoken/clifford.py`.
 
@@ -295,25 +295,31 @@ The differentiable geometric product makes it possible to learn multivector embe
 
 ## 6. Related Work
 
-- **Ahia et al. (2023)** document tokenization costs and their relationship to language bias.
-- **Petrov et al. (2023)** analyze tokenization gaps and downstream effects for low-resource languages.
-- **Sennrich et al. (2016)** introduce BPE for neural machine translation.
-- **Schuster and Nakajima (2012)** describe WordPiece-style tokenization in Japanese and Korean voice search.
-- **Kudo (2018)** introduces subword regularization and the Unigram language model tokenizer.
-- **Goyal et al. (2022)** introduce FLORES-101 as a multilingual evaluation benchmark.
-- **Brandstetter et al. (2022)** and **Ruhe et al. (2023)** apply Clifford/geometric algebra ideas to neural architectures.
+- **Tokenization fairness and tokenizer evaluation**: Ahia et al. (2023) document API cost disparities caused by tokenizer-dependent token counts, while Petrov et al. (2023) show that tokenization length disparities persist even for multilingual tokenizers. Ali et al. (2024) evaluate tokenizer choice in LLM training and caution that fertility and parity are not always reliable proxies for downstream quality. Zouhar et al. (2023) analyze tokenizer quality through an information-theoretic channel-efficiency lens.
+- **Subword tokenization**: Sennrich et al. (2016) introduce BPE for neural machine translation. Schuster and Nakajima (2012) describe WordPiece-style tokenization in Japanese and Korean voice search. Kudo (2018) introduces subword regularization and the Unigram language model tokenizer, while Kudo and Richardson (2018) introduce SentencePiece as a language-independent tokenizer/detokenizer that can train from raw text.
+- **Token-free and learned tokenization models**: CANINE (Clark et al., 2022), ByT5 (Xue et al., 2022), and Charformer (Tay et al., 2022) avoid or soften fixed subword vocabularies by operating on characters, bytes, or learned character-block representations. These approaches address similar brittleness and multilingual coverage concerns from the model architecture side, whereas RotorSubword keeps a tokenizer interface and changes the merge prior.
+- **Multilingual evaluation**: Goyal et al. (2022) introduce FLORES-101 as a multilingual evaluation benchmark with aligned sentences across 101 languages.
+- **Geometric algebra in neural networks**: Brandstetter et al. (2023), Ruhe et al. (2023a, 2023b), and Brehmer et al. (2023) show how Clifford/geometric algebra can support equivariant or geometry-aware neural architectures. RotorSubword uses the same algebraic toolkit for tokenization rather than for downstream neural layers.
 
 ## 7. Conclusion
 
-RotorSubword is an experimental geometric algebra-aware tokenizer that uses Cl(3,0) multivectors, rotor-inspired alignment, and grade-aware scoring to reduce cross-linguistic token-count disparities. On the FLORES-101 benchmark across 12 languages, it achieves fertility parity of 0.089 at 500 vocab and 0.049 at matched 50k vocab — respectively 2.3× and 2.7× better than the best baseline tokenizers. Under the script-fair characters-per-token metric, it achieves CPT parity of 0.443 at matched 50k vocab — 4.2× better than GPT-2's 0.105. At matched vocabulary, Chinese tokenization is 4.3× fairer than GPT-2 (5.33× vs 22.81×), Japanese is 3.7× fairer, and Thai is 8× fairer. The fairness-efficiency tradeoff narrows at scale: English fertility drops from 6.04 (500 vocab) to 2.55 (50k vocab), within 2× of GPT-2. Future work should evaluate larger training corpora, hybrid frequency-geometric objectives, and downstream language-model performance.
+RotorSubword is an experimental geometric algebra-aware tokenizer that uses Cl(3,0) multivectors, rotor-inspired alignment, and grade-aware scoring to reduce cross-linguistic token-count disparities. On the FLORES-101 benchmark across 12 languages, it achieves fertility parity of 0.089 at 500 vocab, about 2.3× better than the strongest baseline in that run. In the separate GPT-2-matched 50k comparison, it achieves fertility parity of 0.049 vs GPT-2's 0.018, about a 2.7× improvement. Under the script-fair characters-per-token metric, it achieves CPT parity of 0.443 at matched 50k vocab — 4.2× better than GPT-2's 0.105. At matched vocabulary, Chinese tokenization is 4.3× fairer than GPT-2 (5.33× vs 22.81×), Japanese is 3.7× fairer, and Thai is 8× fairer. The fairness-efficiency tradeoff narrows at scale: English fertility drops from 6.04 (500 vocab) to 2.55 (50k vocab), within 2× of GPT-2. Future work should evaluate larger training corpora, hybrid frequency-geometric objectives, and downstream language-model performance.
 
 ## References
 
-- Ahia, O., et al. (2023). Do All Languages Cost the Same? Tokenization in the Era of Commercial Language Models. *arXiv preprint*.
-- Brandstetter, J., et al. (2022). Clifford Neural Layers for PDE Modeling. *arXiv preprint*.
+- Ahia, O., et al. (2023). Do All Languages Cost the Same? Tokenization in the Era of Commercial Language Models. *EMNLP*.
+- Ali, M., et al. (2024). Tokenizer Choice For LLM Training: Negligible or Crucial? *Findings of NAACL*.
+- Brandstetter, J., et al. (2023). Clifford Neural Layers for PDE Modeling. *ICLR*.
+- Brehmer, J., et al. (2023). Geometric Algebra Transformer. *NeurIPS*.
+- Clark, J. H., et al. (2022). CANINE: Pre-training an Efficient Tokenization-Free Encoder for Language Representation. *Transactions of the Association for Computational Linguistics*.
 - Goyal, N., et al. (2022). The FLORES-101 Evaluation Benchmark for Low-Resource and Multilingual Machine Translation. *Transactions of the Association for Computational Linguistics*.
 - Kudo, T. (2018). Subword Regularization: Improving Neural Network Translation Models with Multiple Subword Candidates. *ACL*.
-- Petrov, A., et al. (2023). Language Model Tokenizers Introduce Unfairness Between Languages. *arXiv preprint*.
-- Ruhe, D., et al. (2023). Geometric Clifford Algebra Networks. *arXiv preprint*.
+- Kudo, T., and Richardson, J. (2018). SentencePiece: A Simple and Language Independent Subword Tokenizer and Detokenizer for Neural Text Processing. *EMNLP System Demonstrations*.
+- Petrov, A., et al. (2023). Language Model Tokenizers Introduce Unfairness Between Languages. *NeurIPS*.
+- Ruhe, D., et al. (2023a). Geometric Clifford Algebra Networks. *arXiv preprint*.
+- Ruhe, D., et al. (2023b). Clifford Group Equivariant Neural Networks. *NeurIPS*.
 - Schuster, M., and Nakajima, K. (2012). Japanese and Korean Voice Search. *ICASSP*.
 - Sennrich, R., et al. (2016). Neural Machine Translation of Rare Words with Subword Units. *ACL*.
+- Tay, Y., et al. (2022). Charformer: Fast Character Transformers via Gradient-Based Subword Tokenization. *ICLR*.
+- Xue, L., et al. (2022). ByT5: Towards a Token-Free Future with Pre-trained Byte-to-Byte Models. *Transactions of the Association for Computational Linguistics*.
+- Zouhar, V., et al. (2023). Tokenization and the Noiseless Channel. *ACL*.
