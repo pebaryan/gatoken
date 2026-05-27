@@ -1,0 +1,174 @@
+{
+  "RotorSubword_50k": {
+    "ar": {
+      "fertility": 2.912,
+      "chars_per_token": 2.008,
+      "tokens_per_char": 0.498,
+      "total_tokens": 5382,
+      "total_chars": 10807
+    },
+    "en": {
+      "fertility": 2.546,
+      "chars_per_token": 2.391,
+      "tokens_per_char": 0.4182,
+      "total_tokens": 5033,
+      "total_chars": 12035
+    },
+    "hi": {
+      "fertility": 2.393,
+      "chars_per_token": 2.123,
+      "tokens_per_char": 0.471,
+      "total_tokens": 5674,
+      "total_chars": 12047
+    },
+    "id": {
+      "fertility": 2.718,
+      "chars_per_token": 2.647,
+      "tokens_per_char": 0.3777,
+      "total_tokens": 4960,
+      "total_chars": 13131
+    },
+    "ja": {
+      "fertility": 38.779,
+      "chars_per_token": 1.375,
+      "tokens_per_char": 0.7275,
+      "total_tokens": 4033,
+      "total_chars": 5544
+    },
+    "jv": {
+      "fertility": 2.764,
+      "chars_per_token": 2.485,
+      "tokens_per_char": 0.4024,
+      "total_tokens": 5036,
+      "total_chars": 12516
+    },
+    "ko": {
+      "fertility": 2.982,
+      "chars_per_token": 1.495,
+      "tokens_per_char": 0.6689,
+      "total_tokens": 4368,
+      "total_chars": 6530
+    },
+    "ms": {
+      "fertility": 2.7,
+      "chars_per_token": 2.687,
+      "tokens_per_char": 0.3722,
+      "total_tokens": 5108,
+      "total_chars": 13724
+    },
+    "th": {
+      "fertility": 10.373,
+      "chars_per_token": 2.169,
+      "tokens_per_char": 0.461,
+      "total_tokens": 5394,
+      "total_chars": 11700
+    },
+    "tl": {
+      "fertility": 2.306,
+      "chars_per_token": 2.675,
+      "tokens_per_char": 0.3738,
+      "total_tokens": 5679,
+      "total_chars": 15191
+    },
+    "vi": {
+      "fertility": 1.892,
+      "chars_per_token": 2.457,
+      "tokens_per_char": 0.4069,
+      "total_tokens": 5278,
+      "total_chars": 12970
+    },
+    "zh": {
+      "fertility": 13.571,
+      "chars_per_token": 1.189,
+      "tokens_per_char": 0.8407,
+      "total_tokens": 3922,
+      "total_chars": 4665
+    }
+  },
+  "GPT-2": {
+    "ar": {
+      "fertility": 5.99,
+      "chars_per_token": 0.976,
+      "tokens_per_char": 1.0243,
+      "total_tokens": 11070,
+      "total_chars": 10807
+    },
+    "en": {
+      "fertility": 1.283,
+      "chars_per_token": 4.744,
+      "tokens_per_char": 0.2108,
+      "total_tokens": 2537,
+      "total_chars": 12035
+    },
+    "hi": {
+      "fertility": 7.778,
+      "chars_per_token": 0.653,
+      "tokens_per_char": 1.5308,
+      "total_tokens": 18442,
+      "total_chars": 12047
+    },
+    "id": {
+      "fertility": 2.659,
+      "chars_per_token": 2.706,
+      "tokens_per_char": 0.3696,
+      "total_tokens": 4853,
+      "total_chars": 13131
+    },
+    "ja": {
+      "fertility": 72.048,
+      "chars_per_token": 0.74,
+      "tokens_per_char": 1.3516,
+      "total_tokens": 7493,
+      "total_chars": 5544
+    },
+    "jv": {
+      "fertility": 2.559,
+      "chars_per_token": 2.685,
+      "tokens_per_char": 0.3725,
+      "total_tokens": 4662,
+      "total_chars": 12516
+    },
+    "ko": {
+      "fertility": 8.943,
+      "chars_per_token": 0.498,
+      "tokens_per_char": 2.0063,
+      "total_tokens": 13101,
+      "total_chars": 6530
+    },
+    "ms": {
+      "fertility": 2.69,
+      "chars_per_token": 2.696,
+      "tokens_per_char": 0.3709,
+      "total_tokens": 5090,
+      "total_chars": 13724
+    },
+    "th": {
+      "fertility": 41.746,
+      "chars_per_token": 0.539,
+      "tokens_per_char": 1.8554,
+      "total_tokens": 21708,
+      "total_chars": 11700
+    },
+    "tl": {
+      "fertility": 2.243,
+      "chars_per_token": 2.75,
+      "tokens_per_char": 0.3637,
+      "total_tokens": 5525,
+      "total_chars": 15191
+    },
+    "vi": {
+      "fertility": 3.837,
+      "chars_per_token": 1.212,
+      "tokens_per_char": 0.8254,
+      "total_tokens": 10705,
+      "total_chars": 12970
+    },
+    "zh": {
+      "fertility": 29.266,
+      "chars_per_token": 0.552,
+      "tokens_per_char": 1.8131,
+      "total_tokens": 8458,
+      "total_chars": 4665
+    }
+  }
+}
